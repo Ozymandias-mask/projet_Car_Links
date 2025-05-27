@@ -1,1 +1,1 @@
-
+Ce script lit un CSV de holdings et de marques, interroge l’API Perplexity AI pour vérifier si chaque marque appartient toujours à sa holding en 2025, puis utilise GPT-4 pour extraire le nouveau propriétaire en cas de changement. Il produit en sortie un CSV avec, pour chaque paire, le statut de vérification, le propriétaire actuel et un indice de certitude.

@@ -1,0 +1,138 @@
+import pandas as pd
+import re
+import requests
+import openai
+
+API_KEY = "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"
+openai.api_key = "sk-proj-xxxxx"
+INPUT_CSV = "Géniathon-Carrefour - BDE.csv"
+OUTPUT_CSV = "holding_validation_perplexity.csv"
+
+API_URL = "https://api.perplexity.ai/chat/completions"
+HEADERS = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json"
+}
+
+df = pd.read_csv(INPUT_CSV)
+df.columns = df.columns.str.strip().str.lower()
+df = df[["holding name", "brand name"]]
+
+df["vérification"] = ""
+df["propriétaire actuel"] = ""
+df["certitude"] = ""
+
+def check_affiliation_perplexity(holding, brand):
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Tu es un assistant expert en propriété de marques en France."
+                "Tu dois uniquement consulter des sources récemment mit à jour. "
+                "Ne considère pas Wikipédia comme une source fiable. Seules les sources suivantes sont autorisées : sites gouvernementaux français, sites officiels de la marque ou de sa holding, et médias reconnus comme BFM TV. "
+                "Calcule un degré de certitude entre 0 et 1. "
+                "Si aucun site fiable n’est trouvé, considère que la certitude = 0.1. "
+                "Tu dois répondre uniquement avec l’un des trois formats suivants :\n"
+                "- oui (0.xx) réponse moins de 10 mots\n s'il y a aucun changement"
+                "- non (0.xx) réponse moins de 10 mots\n "
+                "- pas d'informations (0.xx) réponse moins de 10 mots"
+                " sois bien concentré sur le format, réponse très courte demandée"
+            )
+        },
+        {
+            "role": "user",
+            "content": f"Est-ce que la marque {brand} appartient toujours à {holding} en 2025 ?"
+        }
+    ]
+    payload = {"model": "sonar", "messages": messages}
+    r = requests.post(API_URL, headers=HEADERS, json=payload)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+requests_done = 0
+
+for idx, row in df.iterrows():
+    holding = row["holding name"]
+    brand   = row["brand name"]
+
+    print(f"Vérification : {holding} → {brand}")
+
+    try:
+        result = check_affiliation_perplexity(holding, brand)
+        print("Réponse API :", result)
+        requests_done += 1
+
+        res_lower = result.lower()
+        df.at[idx, "réponse brute"] = result.strip()
+
+        # --- Extraction de la certitude en % ---
+        cert = 0
+        try:
+            m = re.search(r"\(\s*([0-9.]+)\s*\)", result)
+            if m:
+                v = float(m.group(1))
+                cert = int(v*100) if 0 < v <= 1 else int(v)
+            else:
+                m2 = re.search(r"\b([0-9]\.[0-9]{1,2})\b", result)
+                if m2:
+                    cert = int(float(m2.group(1)) * 100)
+                else:
+                    m3 = re.search(r"\b([01])\b", result)
+                    if m3:
+                        cert = int(m3.group(1)) * 100
+        except:
+            cert = 0
+        df.at[idx, "certitude"] = cert
+
+        # --- Vérification & mise à jour ---
+        if res_lower.startswith("oui"):
+            df.at[idx, "vérification"]       = "Oui"
+            df.at[idx, "propriétaire actuel"]   = holding
+
+        elif res_lower.startswith("non"):
+            df.at[idx, "vérification"] = "Non"
+            # Extraction du nouveau propriétaire via GPT-4
+            try:
+                resp = openai.ChatCompletion.create(
+                    model="gpt-4",
+                    temperature=0,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "Tu es un assistant spécialisé dans l'extraction de noms de propriétaires à partir d’une phrase."
+                                "Ne réponds que par le nom"
+                            )
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"La marque « {brand} » n’appartient plus à « {holding} ». "
+                                f"D'après cette phrase : \"{result}\", qui est le nouveau propriétaire ?"
+                            )
+                        }
+                    ]
+                )
+                nouveau = resp.choices[0].message.content.strip()
+            except Exception:
+                nouveau = "Inconnu"
+            df.at[idx, "propriétaire actuel"] = nouveau
+
+        elif res_lower.startswith("pas d'informations"):
+            df.at[idx, "vérification"]     = "Inconnu"
+            df.at[idx, "propriétaire actuel"] = ""
+
+        else:
+            df.at[idx, "vérification"]     = "Inconnu"
+            df.at[idx, "propriétaire actuel"] = ""
+
+    except Exception as e:
+        print("Erreur API :", e)
+        df.at[idx, "vérification"] = "Erreur API"
+        continue
+
+df[
+    ["holding name", "brand name", "vérification", "propriétaire actuel", "certitude"]
+].to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
+
+print("✅ Analyse terminée. Résultats enregistrés dans :", OUTPUT_CSV)

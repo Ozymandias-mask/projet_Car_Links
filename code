@@ -3,7 +3,7 @@ import re
 import requests
 import openai
 
-API_KEY = "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"
+API_KEY = "pplx-xxx"
 openai.api_key = "sk-proj-xxxxx"
 INPUT_CSV = "Géniathon-Carrefour - BDE.csv"
 OUTPUT_CSV = "holding_validation_perplexity.csv"
